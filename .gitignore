@@ -1,0 +1,20 @@
+Архив 2.zip
+
+# macOS
+.DS_Store
+
+# Python virtual env
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Archives
+*.zip
+
+# Local runtime data
+tracked_chats.json
