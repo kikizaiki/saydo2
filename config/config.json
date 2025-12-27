@@ -1,0 +1,27 @@
+{
+  "drivers": {
+    "telegram": {
+      "enabled": true,
+      "hammer_url": "http://127.0.0.1:7733",
+      "timeout": 5,
+      "tracked_chats_path": "tracked_chats.json"
+    }
+  },
+  "default_driver": "telegram",
+  "parsers": {
+    "use_llm": true,
+    "llm_model": "gpt-4o-mini",
+    "llm_base_url": null,
+    "llm_api_key_env": "OPENAI_API_KEY"
+  },
+  "voice": {
+    "keywords": ["saydo", "сейду", "сойду", "зейду", "агент"],
+    "timeout": 5,
+    "phrase_time_limit": 10
+  },
+  "logs": {
+    "unrecognized_commands": "unrecognized_commands.log",
+    "all_recognized_speech": "all_recognized_speech.log"
+  }
+}
+
