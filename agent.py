@@ -10,6 +10,12 @@ from datetime import datetime
 
 from typing import Dict, List, Optional, Tuple
 
+# Ensure UTF-8 encoding for stdout/stderr
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
+
 SESSION = requests.Session()
 SESSION.trust_env = False
 SESSION.headers.update({"Connection": "close"})
@@ -29,6 +35,14 @@ ALL_RECOGNIZED_LOG_PATH = os.path.join(
 )
 # Set DISABLE_WHITELIST=1 to allow any chat name
 DISABLE_WHITELIST = os.environ.get("DISABLE_WHITELIST", "").lower() in ("1", "true", "yes")
+
+# OpenAI API configuration
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+# Base URL for OpenAI API (useful for proxy services like proxyapi.ru)
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", None)
+# Set USE_LLM=0 to disable LLM parsing and use only regex patterns
+USE_LLM = os.environ.get("USE_LLM", "1").lower() in ("1", "true", "yes")
 
 TIMEOUT_SEC = 5
 
@@ -101,13 +115,158 @@ def resolve_chat(user_target: str, alias_map: Dict[str, str]) -> Optional[str]:
     return alias_map.get(key)
 
 
+def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    """
+    Parse command using LLM (OpenAI API).
+    Returns: (intent, target, message) or None if parsing failed.
+    intent: open_and_type | type_to_chat | paste_to_chat | open_chat_only
+    """
+    if not USE_LLM or not OPENAI_API_KEY:
+        return None
+    
+    try:
+        from openai import OpenAI
+    except ImportError:
+        # If openai library is not installed, fallback to regex
+        return None
+    
+    # Initialize OpenAI client with optional base_url for proxy services
+    client_kwargs = {"api_key": OPENAI_API_KEY}
+    if OPENAI_BASE_URL:
+        client_kwargs["base_url"] = OPENAI_BASE_URL
+    
+    client = OpenAI(**client_kwargs)
+    
+    system_prompt = """Ты — ассистент для разбора команд управления Telegram через голосовой интерфейс.
+Анализируй текст пользователя и извлекай намерение (intent) и параметры (target, message).
+
+Возможные намерения (intent):
+- "type_to_chat": отправить текстовое сообщение в чат (есть текст сообщения)
+- "open_chat_only": просто открыть чат без отправки сообщения (нет текста)
+- "paste_to_chat": вставить содержимое буфера обмена в чат (команда про "буфер" или "буфер обмена")
+- "open_and_type": открыть чат и написать сообщение в кавычках (специальный формат)
+
+Параметры:
+- target: имя чата или человека, кому отправить/где открыть (например: "Избранное", "Максим Ершов", "Петя")
+- message: текст сообщения для отправки (только для type_to_chat и open_and_type)
+
+Важно:
+- Понимай синонимы: "отправь", "напиши", "черкни", "мессага", "сообщение" = type_to_chat
+- "открыть чат", "открыть диалог" = open_chat_only (если нет текста сообщения)
+- "из буфера", "из буфера обмена", "вставить из буфера" = paste_to_chat
+- Если в команде есть текст сообщения, используй type_to_chat
+- Если есть только упоминание чата без текста, используй open_chat_only
+- Игнорируй слова "телеграм", "telegram", "в телеграм" - они не нужны в target
+- Убирай предлоги "в", "к", "ко" из начала target
+
+Верни ТОЛЬКО валидный JSON в формате:
+{
+  "intent": "type_to_chat" | "open_chat_only" | "paste_to_chat" | "open_and_type",
+  "target": "название чата",
+  "message": "текст сообщения" | null
+}"""
+    
+    try:
+        # Ensure text is properly encoded as UTF-8 string
+        user_message = f"Команда пользователя: {text}"
+        
+        # Log request to LLM
+        print(f"🤖 LLM запрос:")
+        print(f"   Модель: {OPENAI_MODEL}")
+        print(f"   Команда: {text}")
+        if OPENAI_BASE_URL:
+            print(f"   Прокси: {OPENAI_BASE_URL}")
+        
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,  # Low temperature for consistent parsing
+            response_format={"type": "json_object"},
+            timeout=10
+        )
+        
+        result_text = response.choices[0].message.content
+        result = json.loads(result_text)
+        
+        # Log response from LLM
+        print(f"🤖 LLM ответ:")
+        print(f"   JSON: {json.dumps(result, ensure_ascii=False, indent=2)}")
+        print(f"   Токены (использовано): {response.usage.total_tokens if hasattr(response, 'usage') and response.usage else 'N/A'}")
+        
+        intent = result.get("intent")
+        target = result.get("target", "").strip()
+        message = result.get("message")
+        if message:
+            message = message.strip()
+        if message == "":
+            message = None
+        
+        # Validate intent
+        valid_intents = ["type_to_chat", "open_chat_only", "paste_to_chat", "open_and_type"]
+        if intent not in valid_intents:
+            return None
+        
+        # Validate that we have target
+        if not target:
+            return None
+        
+        # For type_to_chat and open_and_type, message should be present
+        if intent in ["type_to_chat", "open_and_type"] and not message:
+            # If message is missing but intent requires it, maybe it's actually open_chat_only
+            if intent == "type_to_chat":
+                intent = "open_chat_only"
+            else:
+                return None
+        
+        # For paste_to_chat and open_chat_only, message should be None
+        if intent in ["paste_to_chat", "open_chat_only"]:
+            message = None
+        
+        # Log successful LLM parsing
+        print(f"✅ Распознано через LLM: intent={intent}, target={target}, message={message if message else 'None'}")
+        
+        return (intent, target, message)
+        
+    except Exception as e:
+        # If LLM parsing fails, return None to fallback to regex
+        # Check for common API errors and provide user-friendly messages
+        error_str = str(e)
+        if "429" in error_str or "quota" in error_str.lower() or "insufficient_quota" in error_str.lower():
+            print(f"⚠️  OpenAI API quota exceeded, falling back to regex patterns")
+            print(f"💡 Проверьте баланс на https://platform.openai.com/account/billing")
+        elif "401" in error_str or "unauthorized" in error_str.lower():
+            print(f"⚠️  OpenAI API key invalid, falling back to regex patterns")
+            print(f"💡 Проверьте OPENAI_API_KEY")
+        else:
+            # For other errors, show type only to avoid encoding issues
+            error_type = type(e).__name__
+            print(f"⚠️  LLM parsing failed ({error_type}), falling back to regex patterns")
+        return None
+
+
 def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Returns: (intent, target, message)
-    intent: open_and_type | type_to_chat | paste_to_chat
+    intent: open_and_type | type_to_chat | paste_to_chat | open_chat_only
+    
+    First tries LLM parsing, then falls back to regex patterns.
     """
     t = (text or "").strip()
-
+    
+    # Try LLM parsing first
+    llm_attempted = False
+    if USE_LLM and OPENAI_API_KEY:
+        llm_attempted = True
+        llm_result = parse_command_with_llm(t)
+        if llm_result:
+            return llm_result
+        # LLM didn't recognize the command
+        print(f"📝 LLM не распознал команду, пробую regex паттерны...")
+    
+    # Fallback to regex patterns
     # 1) открой чат X и напиши "..."
     m = re.search(
         r"""открой\s+чат\s+(?P<target>.+?)\s+и\s+напиши\s+[«"](?P<msg>.+?)[»"]\s*$""",
@@ -115,7 +274,10 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "open_and_type", m.group("target").strip(), m.group("msg").strip()
+        regex_recognized = True
+        result = ("open_and_type", m.group("target").strip(), m.group("msg").strip())
+        print(f"✅ Распознано через regex: intent={result[0]}, target={result[1]}, msg={result[2]}")
+        return result
 
     # 2) напиши в X: msg
     m = re.search(
@@ -124,7 +286,9 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "type_to_chat", m.group("target").strip(), m.group("msg").strip()
+        result = ("type_to_chat", m.group("target").strip(), m.group("msg").strip())
+        print(f"✅ Распознано через regex: intent={result[0]}, target={result[1]}, msg={result[2]}")
+        return result
 
     # 3) напиши в чат X: msg
     m = re.search(
@@ -340,7 +504,41 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "paste_to_chat", m.group("target").strip(), None
+        result = ("paste_to_chat", m.group("target").strip(), None)
+        print(f"✅ Распознано через regex: intent={result[0]}, target={result[1]}, msg=None")
+        return result
+
+    # 8a) сообщение X msg (без глагола "отправь" или "напиши")
+    # Обрабатывает: "сообщение Максиму ершову Привет Как дела"
+    # Когда пользователь говорит "Агент сообщение X msg", после удаления ключевого слова остаётся "сообщение X msg"
+    m = re.search(
+        r"""^сообщение\s+(?P<rest>.+)\s*$""",
+        t,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        rest = m.group("rest").strip()
+        words = rest.split()
+        
+        if len(words) >= 3:
+            # Если 3+ слова, берем первые 2 как имя, остальное - сообщение
+            # Например: "Максиму ершову Привет Как дела" -> имя="Максиму ершову", msg="Привет Как дела"
+            target = ' '.join(words[:2])
+            msg = ' '.join(words[2:])
+        elif len(words) >= 2:
+            # Если 2 слова, берем первое как имя, второе как начало сообщения
+            target = words[0]
+            msg = ' '.join(words[1:])
+        else:
+            # Если 1 слово - это имя, сообщение пустое
+            target = words[0] if words else ""
+            msg = ""
+        
+        # Убираем предлоги в начале если есть
+        target = re.sub(r'^(в|к|ко)\s+', '', target)
+        target = re.sub(r'\s+', ' ', target).strip()
+        if target and msg:
+            return "type_to_chat", target, msg.strip()
 
     # 8) вставь в X (из буфера обмена) - старый вариант для совместимости
     m = re.search(
