@@ -573,6 +573,15 @@ def main():
                 text = recognizer.recognize_google(audio, language="ru-RU")
                 text_lower = text.lower()
                 
+                # Log ALL recognized speech for debugging
+                try:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with open(ALL_RECOGNIZED_LOG_PATH, "a", encoding="utf-8") as f:
+                        f.write(f"[{timestamp}] {text}\n")
+                    print(f"🗣️  Распознано: {text}")
+                except Exception:
+                    pass  # Don't fail if logging fails
+                
                 # List of possible keyword variations (how "saydo" or "агент" might be recognized)
                 keywords = [
                     # English "saydo"
@@ -614,7 +623,7 @@ def main():
                         print("⚠️  Команда не найдена после ключевого слова, продолжаю слушать...\n")
                         continue
                 else:
-                    print(f"👂 Услышано: {text}")
+                    # Already printed above with 🗣️
                     print("💡 Подсказка: скажите 'агент' или 'saydo' перед командой\n")
                     continue
                     

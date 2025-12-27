@@ -61,3 +61,4 @@ No HTTP, no TCP sockets.
 - Do not replace UI automation with Telegram API
 - Do not introduce web servers
 - Do not remove hs.ipc communication
+# test

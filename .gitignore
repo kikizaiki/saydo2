@@ -18,3 +18,4 @@ __pycache__/
 
 # Local runtime data
 tracked_chats.json
+hammerspoon_init.lua
