@@ -10,7 +10,7 @@ from datetime import datetime
 
 from typing import Dict, List, Optional, Tuple
 
-# Ensure UTF-8 encoding for stdout/stderr
+# Ensure UTF-8 encoding for stdout/stderr для вывода в консоль
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 if sys.stderr.encoding != 'utf-8':
