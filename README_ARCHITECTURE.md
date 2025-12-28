@@ -33,3 +33,4 @@ if parsed:
 4. Зарегистрировать в `drivers/manager.py`
 5. Добавить конфигурацию в `config/config.json`
 
+

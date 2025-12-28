@@ -153,3 +153,4 @@ class TelegramCommandParser(CommandParser):
         """Получить список поддерживаемых намерений."""
         return ["open_chat_only", "send_message", "paste_to_chat"]
 
+

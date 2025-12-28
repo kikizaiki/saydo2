@@ -214,3 +214,4 @@ success = executor.execute(parsed, alias_map, result_index_map)
 - ⏳ Голосовой ввод - будет перенесен
 - ⏳ LLM парсинг - будет интегрирован в парсеры
 
+

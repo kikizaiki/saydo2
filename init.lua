@@ -359,52 +359,101 @@ hs.alert.show("SayDo server started on :7733", 1.2)
 -- Scroll Via Tab + Mouse movement / START
 -- ///////////////////////////////////////
 
-local active = false
+local active = false              -- режим активен (F9 зажат)
+local autoScrolling = false       -- автоскроллинг активен
 local lastPos = nil
+local scrollDirection = 0         -- направление скролла: 1 = вниз, -1 = вверх, 0 = нет
+local initialMovementDetected = false  -- было ли начальное движение мыши
 
 -- НАСТРОЙКИ ПЛАВНОСТИ
-local TICK = 0.010        -- 10ms (100 Гц). Можно 0.016 для экономии
+local TICK = 0.008        -- 10ms (100 Гц). Можно 0.016 для экономии
 local GAIN = 10           -- сила (чем больше, тем быстрее)
-local SMOOTH = 0.15       -- 0..1 (больше = резче, меньше = плавнее)
-local MAX_STEP = 30      -- максимальный импульс за тик (защита от “улёта”)
+local SMOOTH = 0.1       -- 0..1 (больше = резче, меньше = плавнее)
+local MAX_STEP = 20      -- максимальный импульс за тик (защита от "улёта")
 local DEADZONE = 0.2      -- игнор микродрожи
+local AUTO_SCROLL_SPEED = 5  -- скорость автоскролла (пикселей за тик)
 
 -- внутреннее состояние фильтра
-local v = 0               -- “скорость” скролла (сглаженная)
+local v = 0               -- "скорость" скролла (сглаженная)
 local acc = 0             -- накопление мелких движений (для субпиксельной точности)
+
+-- Обработчик клавиши Tab для остановки автоскролла
+local tabWatcher = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(event)
+  if event:getKeyCode() == 48 then  -- Tab key code
+    if autoScrolling then
+      autoScrolling = false
+      scrollDirection = 0
+      initialMovementDetected = false
+      v, acc = 0, 0
+    end
+  end
+  return false  -- не перехватываем событие, пропускаем дальше
+end)
 
 hs.hotkey.bind({}, "F19",
   function()
     active = true
+    autoScrolling = false
     lastPos = hs.mouse.absolutePosition()
     v, acc = 0, 0
+    scrollDirection = 0
+    initialMovementDetected = false
+    tabWatcher:start()
     -- hs.alert.show("ON", 0.12)
   end,
   function()
     active = false
+    autoScrolling = false
     lastPos = nil
     v, acc = 0, 0
+    scrollDirection = 0
+    initialMovementDetected = false
+    tabWatcher:stop()
     -- hs.alert.show("OFF", 0.12)
   end
 )
 
 scrollTimer = hs.timer.new(TICK, function()
-  if not active or not lastPos then return end
+  if not active then return end
 
   local p = hs.mouse.absolutePosition()
-  local dx = p.x - lastPos.x
-  local dy = p.y - lastPos.y
+  local targetSpeed = 0  -- целевая скорость скролла
+  
+  -- Проверяем движение мыши для активации или изменения направления
+  if lastPos then
+    local dx = p.x - lastPos.x
+    local dy = p.y - lastPos.y
+    
+    -- мёртвая зона
+    if math.abs(dx) < DEADZONE then dx = 0 end
+    if math.abs(dy) < DEADZONE then dy = 0 end
+    
+    -- если есть заметное движение
+    if dx ~= 0 or dy ~= 0 then
+      -- определяем направление скролла
+      local target = (-dy - dx) * GAIN
+      if target > 0.1 then
+        scrollDirection = 1  -- вниз
+        autoScrolling = true
+        initialMovementDetected = true
+      elseif target < -0.1 then
+        scrollDirection = -1  -- вверх
+        autoScrolling = true
+        initialMovementDetected = true
+      end
+    end
+  end
   lastPos = p
 
-  -- мёртвая зона
-  if math.abs(dx) < DEADZONE then dx = 0 end
-  if math.abs(dy) < DEADZONE then dy = 0 end
+  -- Если автоскроллинг активен, устанавливаем целевую скорость
+  if autoScrolling and scrollDirection ~= 0 then
+    targetSpeed = scrollDirection * AUTO_SCROLL_SPEED
+  else
+    targetSpeed = 0  -- если автоскролл не активен, останавливаемся
+  end
 
-  -- твоя логика: dy (вверх/вниз) + (-dx) (влево/вправо как вверх/вниз)
-  local target = (-dy - dx) * GAIN
-
-  -- сглаживание: v стремится к target
-  v = v + (target - v) * SMOOTH
+  -- Сглаживание: v стремится к targetSpeed
+  v = v + (targetSpeed - v) * SMOOTH
 
   -- накапливаем (чтобы мелкие значения не пропадали)
   acc = acc + v
