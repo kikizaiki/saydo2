@@ -6,7 +6,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
-from ..drivers.base import Driver, DriverResult
+# Используем абсолютный импорт для совместимости
+try:
+    from drivers.base import Driver, DriverResult
+except ImportError:
+    # Fallback для относительного импорта
+    from ..drivers.base import Driver, DriverResult
 
 
 @dataclass

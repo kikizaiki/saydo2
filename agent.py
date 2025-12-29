@@ -10,6 +10,32 @@ from datetime import datetime
 
 from typing import Dict, List, Optional, Tuple
 
+# Настраиваем sys.path для импортов модулей проекта
+# Это нужно для работы относительных импортов в parsers, actions, drivers
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# Импорты для Chrome поддержки
+CHROME_SUPPORT = False
+ChromeCommandParser = None
+DriverManager = None
+CHROME_ACTIONS = None
+ActionContext = None
+
+try:
+    from parsers.chrome_parser import ChromeCommandParser
+    from drivers import DriverManager
+    from actions.chrome_actions import CHROME_ACTIONS
+    from actions.base import ActionContext
+    CHROME_SUPPORT = True
+except ImportError as e:
+    # Chrome поддержка недоступна, но это не критично
+    # Команды Chrome все равно могут быть распознаны через LLM
+    if __name__ == "__main__":
+        # Показываем ошибку только при запуске напрямую (не при импорте)
+        pass  # Ошибка будет показана только если команда Chrome будет выполнена
+
 # Ensure UTF-8 encoding for stdout/stderr для вывода в консоль
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -115,11 +141,12 @@ def resolve_chat(user_target: str, alias_map: Dict[str, str]) -> Optional[str]:
     return alias_map.get(key)
 
 
-def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str]]]:
+def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str], str]]:
     """
     Parse command using LLM (OpenAI API).
-    Returns: (intent, target, message) or None if parsing failed.
-    intent: open_and_type | type_to_chat | paste_to_chat | open_chat_only
+    Returns: (intent, target, message, driver) or None if parsing failed.
+    intent: open_and_type | type_to_chat | paste_to_chat | open_chat_only | open_tab
+    driver: chrome | telegram
     """
     if not USE_LLM or not OPENAI_API_KEY:
         return None
@@ -137,32 +164,40 @@ def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str]]
     
     client = OpenAI(**client_kwargs)
     
-    system_prompt = """Ты — ассистент для разбора команд управления Telegram через голосовой интерфейс.
-Анализируй текст пользователя и извлекай намерение (intent) и параметры (target, message).
+    system_prompt = """Ты — ассистент для разбора команд управления Telegram и Chrome через голосовой интерфейс.
+Анализируй текст пользователя и извлекай намерение (intent), параметры (target, message) и драйвер (driver).
 
-Возможные намерения (intent):
-- "type_to_chat": отправить текстовое сообщение в чат (есть текст сообщения)
-- "open_chat_only": просто открыть чат без отправки сообщения (нет текста)
-- "paste_to_chat": вставить содержимое буфера обмена в чат (команда про "буфер" или "буфер обмена")
-- "open_and_type": открыть чат и написать сообщение в кавычках (специальный формат)
+ВАЖНО: Сначала определи, для какой программы команда:
+- Если команда содержит "вкладку", "вкладка", "в Chrome", "в C", "в браузере" → это команда для Chrome (driver: "chrome", intent: "open_tab")
+- Если команда содержит "чат", "сообщение", "телеграм", "telegram" → это команда для Telegram (driver: "telegram")
 
-Параметры:
-- target: имя чата или человека, кому отправить/где открыть (например: "Избранное", "Максим Ершов", "Петя")
+Для Chrome:
+- intent: "open_tab" - открыть вкладку по ключевым словам
+- target: ключевые слова для поиска (например: "Gmail", "github", "youtube")
+- message: всегда null
+
+Для Telegram:
+- intent: "type_to_chat" - отправить текстовое сообщение в чат (есть текст сообщения)
+- intent: "open_chat_only" - просто открыть чат без отправки сообщения (нет текста)
+- intent: "paste_to_chat" - вставить содержимое буфера обмена в чат
+- intent: "open_and_type" - открыть чат и написать сообщение в кавычках
+- target: имя чата или человека (например: "Избранное", "Максим Ершов", "Петя")
 - message: текст сообщения для отправки (только для type_to_chat и open_and_type)
 
-Важно:
-- Понимай синонимы: "отправь", "напиши", "черкни", "мессага", "сообщение" = type_to_chat
-- "открыть чат", "открыть диалог" = open_chat_only (если нет текста сообщения)
-- "из буфера", "из буфера обмена", "вставить из буфера" = paste_to_chat
-- Если в команде есть текст сообщения, используй type_to_chat
-- Если есть только упоминание чата без текста, используй open_chat_only
-- Игнорируй слова "телеграм", "telegram", "в телеграм" - они не нужны в target
-- Убирай предлоги "в", "к", "ко" из начала target
+Примеры команд для Chrome:
+- "открой вкладку Gmail" → {"driver": "chrome", "intent": "open_tab", "target": "Gmail", "message": null}
+- "открой в Chrome github" → {"driver": "chrome", "intent": "open_tab", "target": "github", "message": null}
+- "открой в C youtube" → {"driver": "chrome", "intent": "open_tab", "target": "youtube", "message": null}
+
+Примеры команд для Telegram:
+- "открой чат Избранное" → {"driver": "telegram", "intent": "open_chat_only", "target": "Избранное", "message": null}
+- "напиши в Максим Ершов: привет" → {"driver": "telegram", "intent": "type_to_chat", "target": "Максим Ершов", "message": "привет"}
 
 Верни ТОЛЬКО валидный JSON в формате:
 {
-  "intent": "type_to_chat" | "open_chat_only" | "paste_to_chat" | "open_and_type",
-  "target": "название чата",
+  "driver": "chrome" | "telegram",
+  "intent": "open_tab" | "type_to_chat" | "open_chat_only" | "paste_to_chat" | "open_and_type",
+  "target": "ключевые слова или название чата",
   "message": "текст сообщения" | null
 }"""
     
@@ -196,6 +231,7 @@ def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str]]
         print(f"   JSON: {json.dumps(result, ensure_ascii=False, indent=2)}")
         print(f"   Токены (использовано): {response.usage.total_tokens if hasattr(response, 'usage') and response.usage else 'N/A'}")
         
+        driver = result.get("driver", "telegram")  # По умолчанию telegram для обратной совместимости
         intent = result.get("intent")
         target = result.get("target", "").strip()
         message = result.get("message")
@@ -204,31 +240,45 @@ def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str]]
         if message == "":
             message = None
         
-        # Validate intent
-        valid_intents = ["type_to_chat", "open_chat_only", "paste_to_chat", "open_and_type"]
-        if intent not in valid_intents:
-            return None
+        # Validate driver
+        valid_drivers = ["chrome", "telegram"]
+        if driver not in valid_drivers:
+            driver = "telegram"  # Fallback to telegram
+        
+        # Validate intent based on driver
+        if driver == "chrome":
+            valid_intents = ["open_tab"]
+            if intent not in valid_intents:
+                return None
+        else:  # telegram
+            valid_intents = ["type_to_chat", "open_chat_only", "paste_to_chat", "open_and_type"]
+            if intent not in valid_intents:
+                return None
         
         # Validate that we have target
         if not target:
             return None
         
-        # For type_to_chat and open_and_type, message should be present
-        if intent in ["type_to_chat", "open_and_type"] and not message:
-            # If message is missing but intent requires it, maybe it's actually open_chat_only
-            if intent == "type_to_chat":
-                intent = "open_chat_only"
-            else:
-                return None
-        
-        # For paste_to_chat and open_chat_only, message should be None
-        if intent in ["paste_to_chat", "open_chat_only"]:
+        # For Chrome, message should always be None
+        if driver == "chrome":
             message = None
+        else:
+            # For Telegram: type_to_chat and open_and_type, message should be present
+            if intent in ["type_to_chat", "open_and_type"] and not message:
+                # If message is missing but intent requires it, maybe it's actually open_chat_only
+                if intent == "type_to_chat":
+                    intent = "open_chat_only"
+                else:
+                    return None
+            
+            # For paste_to_chat and open_chat_only, message should be None
+            if intent in ["paste_to_chat", "open_chat_only"]:
+                message = None
         
         # Log successful LLM parsing
-        print(f"✅ Распознано через LLM: intent={intent}, target={target}, message={message if message else 'None'}")
+        print(f"✅ Распознано через LLM: driver={driver}, intent={intent}, target={target}, message={message if message else 'None'}")
         
-        return (intent, target, message)
+        return (intent, target, message, driver)
         
     except Exception as e:
         # If LLM parsing fails, return None to fallback to regex
@@ -247,26 +297,40 @@ def parse_command_with_llm(text: str) -> Optional[Tuple[str, str, Optional[str]]
         return None
 
 
-def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Returns: (intent, target, message)
-    intent: open_and_type | type_to_chat | paste_to_chat | open_chat_only
+    Returns: (intent, target, message, driver)
+    intent: open_and_type | type_to_chat | paste_to_chat | open_chat_only | open_tab
+    driver: telegram | chrome | None (defaults to telegram)
     
-    First tries LLM parsing, then falls back to regex patterns.
+    First tries Chrome parser, then LLM parsing, then falls back to regex patterns.
     """
     t = (text or "").strip()
     
-    # Try LLM parsing first
+    # First, try Chrome parser if Chrome support is available
+    if CHROME_SUPPORT:
+        chrome_parser = ChromeCommandParser()
+        chrome_result = chrome_parser.parse(t)
+        if chrome_result:
+            print(f"🔍 Chrome парсер проверил команду: intent={chrome_result.intent}, target={chrome_result.target}, valid={chrome_result.is_valid()}")
+            if chrome_result.is_valid():
+                print(f"✅ Распознано как Chrome команда: intent={chrome_result.intent}, target={chrome_result.target}")
+                return (chrome_result.intent, chrome_result.target, chrome_result.message, chrome_result.driver)
+        else:
+            print(f"🔍 Chrome парсер не распознал команду '{t}'")
+    
+    # Try LLM parsing (for both Chrome and Telegram commands)
     llm_attempted = False
     if USE_LLM and OPENAI_API_KEY:
         llm_attempted = True
         llm_result = parse_command_with_llm(t)
         if llm_result:
+            # LLM результат уже содержит driver
             return llm_result
         # LLM didn't recognize the command
         print(f"📝 LLM не распознал команду, пробую regex паттерны...")
     
-    # Fallback to regex patterns
+    # Fallback to regex patterns (for Telegram commands)
     # 1) открой чат X и напиши "..."
     m = re.search(
         r"""открой\s+чат\s+(?P<target>.+?)\s+и\s+напиши\s+[«"](?P<msg>.+?)[»"]\s*$""",
@@ -275,7 +339,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
     )
     if m:
         regex_recognized = True
-        result = ("open_and_type", m.group("target").strip(), m.group("msg").strip())
+        result = ("open_and_type", m.group("target").strip(), m.group("msg").strip(), "telegram")
         print(f"✅ Распознано через regex: intent={result[0]}, target={result[1]}, msg={result[2]}")
         return result
 
@@ -286,7 +350,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        result = ("type_to_chat", m.group("target").strip(), m.group("msg").strip())
+        result = ("type_to_chat", m.group("target").strip(), m.group("msg").strip(), "telegram")
         print(f"✅ Распознано через regex: intent={result[0]}, target={result[1]}, msg={result[2]}")
         return result
 
@@ -297,7 +361,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "type_to_chat", m.group("target").strip(), m.group("msg").strip()
+        return "type_to_chat", m.group("target").strip(), m.group("msg").strip(), "telegram"
 
     # 4) напиши в X что msg
     m = re.search(
@@ -306,7 +370,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "type_to_chat", m.group("target").strip(), m.group("msg").strip()
+        return "type_to_chat", m.group("target").strip(), m.group("msg").strip(), "telegram"
 
     # 4a) напиши X сообщение msg (без "в")
     m = re.search(
@@ -318,7 +382,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = m.group("target").strip()
         # Убираем возможные предлоги в начале
         target = re.sub(r'^(в|к|ко)\s+', '', target)
-        return "type_to_chat", target, m.group("msg").strip()
+        return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 5) написать в чат X, что msg
     m = re.search(
@@ -327,7 +391,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "type_to_chat", m.group("target").strip(), m.group("msg").strip()
+        return "type_to_chat", m.group("target").strip(), m.group("msg").strip(), "telegram"
 
     # 5a) отправь в телеграм/telegram в X сообщение msg (голосовая команда)
     m = re.search(
@@ -336,7 +400,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "type_to_chat", m.group("target").strip(), m.group("msg").strip()
+        return "type_to_chat", m.group("target").strip(), m.group("msg").strip(), "telegram"
 
     # 5b) отправь в телеграм/telegram в чат X сообщение msg (голосовая команда)
     m = re.search(
@@ -357,7 +421,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = m.group("target").strip()
         # Если есть "в" перед именем, убираем его
         target = re.sub(r'^в\s+', '', target)
-        return "type_to_chat", target, m.group("msg").strip()
+        return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 5c1) отправь X сообщение msg (без "в телеграм")
     m = re.search(
@@ -372,7 +436,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         # Убираем "в telegram" или "в телеграм" из target, если там есть
         target = re.sub(r'\s+в\s+(телегра(м|мма?)|telegram)\s*$', '', target, flags=re.IGNORECASE)
         target = re.sub(r'^\s*(телегра(м|мма?)|telegram)\s+', '', target, flags=re.IGNORECASE)
-        return "type_to_chat", target.strip(), m.group("msg").strip()
+        return "type_to_chat", target.strip(), m.group("msg").strip(), "telegram"
 
     # 5c2) отправь X в telegram сообщение msg (порядок слов: имя потом "в telegram")
     m = re.search(
@@ -382,7 +446,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
     )
     if m:
         target = m.group("target").strip()
-        return "type_to_chat", target, m.group("msg").strip()
+        return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 5c1) отправь X сообщение msg (без "в телеграм")
     # Обрабатывает: "отправь Максиму ершову сообщение Привет"
@@ -401,7 +465,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         # Очищаем от лишних пробелов
         target = re.sub(r'\s+', ' ', target).strip()
         if target:  # Убеждаемся что target не пустой
-            return "type_to_chat", target, m.group("msg").strip()
+            return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 5c2) отправь сообщение X msg (порядок: сообщение перед именем)
     # Обрабатывает: "отправь сообщение Максиму ершову Привет мир"
@@ -437,7 +501,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = re.sub(r'^\s*(?:телегра(м|мма?)|telegram)\s+', '', target, flags=re.IGNORECASE)
         target = re.sub(r'\s+', ' ', target).strip()
         if target and msg:
-            return "type_to_chat", target, msg.strip()
+            return "type_to_chat", target, msg.strip(), "telegram"
 
     # 5c3) отправь X в telegram сообщение msg (порядок слов: имя потом "в telegram")
     # Обрабатывает: "отправь ершову Максиму в Telegram сообщение Привет"
@@ -450,7 +514,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = m.group("target").strip()
         target = re.sub(r'\s+', ' ', target).strip()
         if target:
-            return "type_to_chat", target, m.group("msg").strip()
+            return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 5d) отправь в телеграм/telegram X (просто открыть чат, без сообщения)
     m = re.search(
@@ -462,7 +526,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = m.group("target").strip()
         # Если есть "в" перед именем, убираем его
         target = re.sub(r'^в\s+', '', target)
-        return "open_chat_only", target, None
+        return "open_chat_only", target, None, "telegram"
 
     # 5e) отправь X сообщение msg (без "в телеграм", просто "отправь")
     m = re.search(
@@ -474,7 +538,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = m.group("target").strip()
         # Убираем возможные предлоги в начале
         target = re.sub(r'^(в|к|ко)\s+', '', target)
-        return "type_to_chat", target, m.group("msg").strip()
+        return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 5f) отправь в X сообщение msg (без "телеграм")
     m = re.search(
@@ -486,7 +550,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = m.group("target").strip()
         # Пропускаем если это "telegram" или "телеграм"
         if target.lower() not in ["telegram", "телеграм", "телеграмма"]:
-            return "type_to_chat", target, m.group("msg").strip()
+            return "type_to_chat", target, m.group("msg").strip(), "telegram"
 
     # 6) отправь из буфера в X
     m = re.search(
@@ -495,7 +559,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "paste_to_chat", m.group("target").strip(), None
+        return "paste_to_chat", m.group("target").strip(), None, "telegram"
 
     # 7) отправь из буфера в чат X
     m = re.search(
@@ -504,7 +568,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        result = ("paste_to_chat", m.group("target").strip(), None)
+        result = ("paste_to_chat", m.group("target").strip(), None, "telegram")
         print(f"✅ Распознано через regex: intent={result[0]}, target={result[1]}, msg=None")
         return result
 
@@ -538,7 +602,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         target = re.sub(r'^(в|к|ко)\s+', '', target)
         target = re.sub(r'\s+', ' ', target).strip()
         if target and msg:
-            return "type_to_chat", target, msg.strip()
+            return "type_to_chat", target, msg.strip(), "telegram"
 
     # 8) вставь в X (из буфера обмена) - старый вариант для совместимости
     m = re.search(
@@ -547,7 +611,7 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "paste_to_chat", m.group("target").strip(), None
+        return "paste_to_chat", m.group("target").strip(), None, "telegram"
 
     # 9) вставь в чат X (из буфера обмена) - старый вариант для совместимости
     m = re.search(
@@ -556,9 +620,9 @@ def parse_command(text: str) -> Tuple[Optional[str], Optional[str], Optional[str
         flags=re.IGNORECASE,
     )
     if m:
-        return "paste_to_chat", m.group("target").strip(), None
+        return "paste_to_chat", m.group("target").strip(), None, "telegram"
 
-    return None, None, None
+    return None, None, None, None
 
 
 def hs_call(payload: Dict) -> Dict:
@@ -654,7 +718,17 @@ def execute_command(user_text: str, full_recognized_text: Optional[str] = None) 
         user_text: The command text to execute (after keyword removal)
         full_recognized_text: Optional full recognized text (before keyword removal) for logging
     """
-    intent, target, msg = parse_command(user_text)
+    # Логируем полный распознанный текст для анализа проблем распознавания речи
+    if full_recognized_text and full_recognized_text != user_text:
+        print(f"📝 Полный распознанный текст: {full_recognized_text}")
+    
+    parse_result = parse_command(user_text)
+    intent, target, msg, driver = parse_result
+    
+    # Для Chrome команд показываем, что было распознано
+    if driver == "chrome" and target:
+        print(f"🔍 Ищем вкладку по ключевым словам: '{target}'")
+        print(f"💡 Если вкладка не найдена, проверьте правильность распознавания речи")
 
     if not intent:
         # Log unrecognized command
@@ -666,7 +740,36 @@ def execute_command(user_text: str, full_recognized_text: Optional[str] = None) 
         print('  "отправь из буфера в избранное"')
         print('  "отправь в телеграм в избранное сообщение привет мир"')
         print('  "отправь в телеграм Максим Ершов"  # просто открыть чат')
+        print('  "открой вкладку github"  # открыть вкладку в Chrome')
+        print('  "открой в C youtube"  # открыть вкладку в Chrome')
         return False
+    
+    # Если команда для Chrome, обрабатываем отдельно (ДО проверки whitelist)
+    if driver == "chrome":
+        if CHROME_SUPPORT:
+            # Проверяем здоровье системы перед выполнением
+            try:
+                from utils.health_check import check_hammerspoon_server
+                hammer_url = os.environ.get("HAMMER_URL", "http://127.0.0.1:7733")
+                is_ok, message = check_hammerspoon_server(hammer_url)
+                if not is_ok:
+                    print(f"❌ {message}")
+                    print("💡 Команда не будет выполнена. Исправьте проблему и попробуйте снова.\n")
+                    return False
+            except ImportError:
+                # Health check not available, continue anyway
+                pass
+            except Exception:
+                # Don't fail if health check fails
+                pass
+            
+            return execute_chrome_command(intent, target, msg)
+        else:
+            print("❌ Chrome поддержка недоступна. Установите необходимые модули.")
+            print("💡 Убедитесь, что все файлы Chrome модулей находятся в правильных директориях.")
+            return False
+    
+    # Остальная логика для Telegram (существующий код)
 
     try:
         tracked = load_tracked_chats(TRACKED_CHATS_PATH)
@@ -736,6 +839,89 @@ def execute_command(user_text: str, full_recognized_text: Optional[str] = None) 
 
         print("✅ Готово: чат открыт, текст вставлен (draft), ничего не отправлено.")
         return True
+
+
+def execute_chrome_command(intent: str, target: str, msg: Optional[str] = None) -> bool:
+    """
+    Execute a Chrome command.
+    
+    Args:
+        intent: Command intent (e.g., "open_tab")
+        target: Keywords for search
+        msg: Optional message (not used for Chrome)
+    
+    Returns:
+        True if command was executed successfully, False otherwise
+    """
+    if intent != "open_tab":
+        print(f"❌ Неподдерживаемый intent для Chrome: {intent}")
+        return False
+    
+    if not target:
+        print("❌ Ключевые слова не указаны")
+        return False
+    
+    try:
+        # Проверяем здоровье системы перед выполнением команды
+        try:
+            from utils.health_check import run_health_checks, print_health_report
+            results = run_health_checks()
+            critical_ok = print_health_report(results)
+            
+            if not critical_ok:
+                print("⚠️  Критические проверки не прошли. Команда может не выполниться.")
+                print("💡 Исправьте проблемы выше и попробуйте снова.\n")
+        except ImportError:
+            # Health check module not available, skip
+            pass
+        except Exception as e:
+            # Don't fail if health check fails
+            print(f"⚠️  Не удалось выполнить проверку системы: {e}")
+        
+        # Инициализируем менеджер драйверов
+        driver_manager = DriverManager()
+        driver = driver_manager.get_driver("chrome")
+        
+        if not driver:
+            print("❌ Chrome драйвер не найден или не включен")
+            print("💡 Проверьте config/config.json - драйвер chrome должен быть enabled")
+            return False
+        
+        # Получаем действие
+        action = CHROME_ACTIONS.get(intent)
+        if not action:
+            print(f"❌ Действие '{intent}' не найдено для Chrome")
+            return False
+        
+        # Создаем контекст
+        context = ActionContext(
+            driver=driver,
+            target=target,
+            message=msg
+        )
+        
+        # Выполняем действие
+        result = action.execute(context)
+        
+        if not result.ok:
+            # Улучшенное сообщение об ошибке
+            error_msg = result.error or "Unknown error"
+            print(f"❌ Ошибка выполнения команды: {error_msg}")
+            
+            # Предлагаем решения
+            if "not running" in error_msg.lower() or "connection" in error_msg.lower():
+                print("\n💡 Решения:")
+                print("   1. Убедитесь, что Hammerspoon запущен")
+                print("   2. Перезагрузите конфигурацию Hammerspoon (Cmd+R)")
+                print("   3. Проверьте, что init.lua загружен правильно")
+        
+        return result.ok
+        
+    except Exception as e:
+        print(f"❌ Ошибка выполнения Chrome команды: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def main():

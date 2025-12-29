@@ -7,7 +7,8 @@ Drivers module - абстракция для управления разными
 
 from .base import Driver, DriverResult
 from .telegram import TelegramDriver
+from .chrome import ChromeDriver
 from .manager import DriverManager
 
-__all__ = ["Driver", "DriverResult", "TelegramDriver", "DriverManager"]
+__all__ = ["Driver", "DriverResult", "TelegramDriver", "ChromeDriver", "DriverManager"]
 

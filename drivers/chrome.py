@@ -1,5 +1,5 @@
 """
-Telegram driver - реализация драйвера для Telegram Desktop через Hammerspoon.
+Chrome driver - реализация драйвера для Google Chrome через Hammerspoon.
 """
 
 import os
@@ -14,14 +14,14 @@ _session.trust_env = False
 _session.headers.update({"Connection": "close"})
 
 
-class TelegramDriver(Driver):
+class ChromeDriver(Driver):
     """
-    Драйвер для управления Telegram Desktop через Hammerspoon.
+    Драйвер для управления Google Chrome через Hammerspoon.
     """
     
     def __init__(self, config: Dict[str, Any]):
         """
-        Инициализация Telegram драйвера.
+        Инициализация Chrome драйвера.
         
         Args:
             config: Конфигурация с ключами:
@@ -84,71 +84,51 @@ class TelegramDriver(Driver):
                 data={"raw": r.text[:5000], "url": url, "exception": str(e)}
             )
     
-    def open_chat(self, target: str, auto_select: bool = True, result_index: Optional[int] = None, **kwargs) -> DriverResult:
+    def open_tab(self, keywords: str, **kwargs) -> DriverResult:
         """
-        Открыть чат в Telegram.
+        Открыть вкладку в Chrome по ключевым словам.
+        
+        Проверяет:
+        1. Открытые вкладки - если найдена, переходит на неё
+        2. История браузера - если найдена, открывает
+        3. Закладки - если найдена, открывает
+        4. Если ничего не найдено - открывает новую вкладку с поиском
         
         Args:
-            target: Имя чата (canonical)
-            auto_select: Использовать OCR для автоматического выбора (True) или полагаться на result_index
-            result_index: Индекс результата в поиске (0-based, None для OCR)
+            keywords: Ключевые слова для поиска
             **kwargs: Дополнительные параметры (игнорируются)
         
         Returns:
             DriverResult
         """
         payload = {
-            "cmd": "open_chat",
-            "query": target,
-            "auto_select": auto_select
-        }
-        if result_index is not None:
-            payload["result_index"] = result_index
-        
-        return self._call_hammer(payload)
-    
-    def send_message(self, text: str, use_clipboard: bool = True, draft: bool = True, **kwargs) -> DriverResult:
-        """
-        Отправить сообщение в открытый чат.
-        
-        Args:
-            text: Текст сообщения
-            use_clipboard: Использовать буфер обмена для вставки (безопаснее)
-            draft: Не отправлять сразу, только вставить как черновик
-            **kwargs: Дополнительные параметры (игнорируются)
-        
-        Returns:
-            DriverResult
-        """
-        payload = {
-            "cmd": "send",
-            "text": text,
-            "use_clipboard": use_clipboard,
-            "draft": draft
+            "cmd": "open_chrome_tab",
+            "keywords": keywords
         }
         
         return self._call_hammer(payload)
     
-    def paste_from_clipboard(self, draft: bool = True, **kwargs) -> DriverResult:
+    def open_chat(self, target: str, **kwargs) -> DriverResult:
         """
-        Вставить содержимое буфера обмена в открытый чат.
-        
-        Args:
-            draft: Не отправлять сразу, только вставить как черновик
-            **kwargs: Дополнительные параметры (игнорируются)
-        
-        Returns:
-            DriverResult
+        Метод для совместимости с базовым интерфейсом.
+        Перенаправляет на open_tab.
         """
-        payload = {
-            "cmd": "paste",
-            "draft": draft
-        }
-        
-        return self._call_hammer(payload)
+        return self.open_tab(target, **kwargs)
+    
+    def send_message(self, text: str, **kwargs) -> DriverResult:
+        """
+        Не поддерживается для Chrome.
+        """
+        return DriverResult(ok=False, error="send_message not supported for Chrome")
+    
+    def paste_from_clipboard(self, **kwargs) -> DriverResult:
+        """
+        Не поддерживается для Chrome.
+        """
+        return DriverResult(ok=False, error="paste_from_clipboard not supported for Chrome")
     
     @property
     def supported_actions(self) -> List[str]:
         """Список поддерживаемых действий."""
-        return ["open_chat", "send_message", "paste_from_clipboard"]
+        return ["open_tab", "open_chat"]
 

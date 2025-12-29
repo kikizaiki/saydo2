@@ -5,6 +5,11 @@
       "hammer_url": "http://127.0.0.1:7733",
       "timeout": 5,
       "tracked_chats_path": "tracked_chats.json"
+    },
+    "chrome": {
+      "enabled": true,
+      "hammer_url": "http://127.0.0.1:7733",
+      "timeout": 5
     }
   },
   "default_driver": "telegram",

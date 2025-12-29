@@ -8,10 +8,12 @@ from typing import Dict, Optional
 
 from .base import Driver
 from .telegram import TelegramDriver
+from .chrome import ChromeDriver
 
 # Регистр доступных драйверов
 _DRIVER_CLASSES = {
     "telegram": TelegramDriver,
+    "chrome": ChromeDriver,
 }
 
 
